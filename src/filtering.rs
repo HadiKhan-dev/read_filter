@@ -11,11 +11,11 @@ use rust_htslib::tpool::ThreadPool as HtslibThreadPool;
 use rust_htslib::{bam, bam::Read,bam::Record};
 use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::bam::Writer;
-use rust_htslib::bam::record::Aux;
+use rust_htslib::bam::record::{Aux, Seq};
 use rust_htslib::bam::header::HeaderRecord;
 
 pub fn check_keep(record_ref: &Record,
-    keep_locs: &HashMap<i32,Vec<[i32;2]>>, keep_secondary: bool,
+    keep_locs: &HashMap<i32,Vec<[i32;2]>>,
     ) -> bool {
 
    if record_ref.is_supplementary() {
@@ -26,11 +26,11 @@ pub fn check_keep(record_ref: &Record,
        return false;
    }
 
-   if !keep_secondary {
-       if record_ref.is_secondary() {
-           return false;
-       }
-   }
+//    if !keep_secondary {
+//        if record_ref.is_secondary() {
+//            return false;
+//        }
+//    }
 
 
 
@@ -102,8 +102,13 @@ pub fn get_new_mapq(alignment_scores: &Vec<i64>,temp: f64,max_score: i64) -> Vec
 
 }
 
-pub fn write_records(bam_writer: &mut Writer, records: Vec<Record>) -> () {
+pub fn write_records(bam_writer: &mut Writer, records: Vec<Record>, keep_secondary: bool) -> () {
     for rec in records {
+        if !keep_secondary {
+            if rec.is_secondary() {
+            continue
+            }
+        }
         bam_writer.write(&rec);
     }
     //bam_writer.;
@@ -112,9 +117,13 @@ pub fn write_records(bam_writer: &mut Writer, records: Vec<Record>) -> () {
 
 pub fn do_analysis(same_records: &Vec<Record>,
     keep_locs: &HashMap<i32,Vec<[i32;2]>>, temperature: f64,
-    keep_secondary: bool, keep_sequence: bool, 
+    keep_sequence: bool, 
     ) -> Vec<Record> {
 
+    //If we are passed in an empty set of records to analyse, jusr return an empty vector
+    if same_records.len() == 0 {
+        return vec![];
+    }
 
     let mut new_records: Vec<Record> = Vec::new();
 
@@ -123,7 +132,7 @@ pub fn do_analysis(same_records: &Vec<Record>,
 
     for i in 0..same_records.len() {
         let rec = &same_records[i];
-        if check_keep(rec,keep_locs,keep_secondary) {
+        if check_keep(rec,keep_locs) {
             keep_flags[i] = 1;
         }
     }
@@ -149,20 +158,52 @@ pub fn do_analysis(same_records: &Vec<Record>,
 
     let new_qualities: Vec<u8> = get_new_mapq(&alignment_score,
         temperature,read_length);
+    
+    let mut best_match_index = -1;
+    let mut best_match_score = -1;
+
+    for i in 0..new_qualities.len() {
+        if ((new_qualities[i] as isize) > best_match_score) & (new_qualities[i] != 255){
+            best_match_index = i as isize;
+            best_match_score = (new_qualities[i] as isize);
+        }
+    }
+
+    //Code for transferring over the sequence data
+    let mut found_seq_string = String::new();
+    let mut found_sequence = "";
+
+    for i in 0..same_records.len() {
+        if same_records[i].seq().len() > found_sequence.len() {
+            found_seq_string = String::from_utf8(same_records[i].seq().as_bytes()).expect("");
+            found_sequence = found_seq_string.as_str();
+        }
+    }
+
+    //println!("{:?} {} {}",found_sequence,found_sequence.len(),best_match_index);
 
     for i in 0..same_records.len() {
         if keep_flags[i] == 1{
-            let mut cloned_record = same_records[i].clone();
-            cloned_record.set_mapq(new_qualities[i]);
+            let mut cloned_record: Record = same_records[i].clone();
             let record_name = same_records[i].qname().clone();
 
-            if !keep_sequence {
-                //let mut new_rec = cloned_record.clone();
-                let cig_string = cloned_record.cigar().clone().take();
-                let cigar_seq = Some(&cig_string);
+            let cig_string = cloned_record.cigar().clone().take();
+            let cigar_seq = Some(&cig_string);
 
-                cloned_record.set(record_name,cigar_seq,&[],&[]);
-                //cloned_record = new_rec;
+            //Remove sequence data
+            cloned_record.set(record_name,cigar_seq,&[],&[]);
+
+            cloned_record.set_mapq(new_qualities[i]);
+
+            if (i as isize) != best_match_index {
+                cloned_record.set_secondary();
+            } else {
+                cloned_record.unset_secondary();
+                if keep_sequence {
+                    //cloned_record.set(record_name,cigar_seq,
+                    //    found_sequence.as_bytes(),
+                    //    &vec![ 255 as u8; found_sequence.len()]);
+                }
             }
             new_records.push(cloned_record);
         }
@@ -329,15 +370,15 @@ full_command: &str) -> () {
             ct += 1;
         } else { //Otherwise we have all records for the last read
 
-            //Analyse these records and filter them/update mapq scores etc.
-            let new_recs = do_analysis(&same_vec,
-                &keep_locations,temperature,keep_secondary,keep_sequence);
+            //Break up the records by whether they are for the foward read in the pair or the reverse read
+            let separated_recs = split_directions(same_vec);
 
-            let separated_recs = split_directions(new_recs);
-            
-            //Write the list of filtered records to our output file
             for group in separated_recs {
-                write_records(&mut output,group);
+                //Analyse these records and filter them/update mapq scores etc.
+                let new_recs = do_analysis(&group,
+                    &keep_locations,temperature,keep_sequence);
+                //Write the list of filtered records to our output file
+                write_records(&mut output,new_recs,keep_secondary);
             }
             
             //start a new list of records for the current read
@@ -354,20 +395,21 @@ full_command: &str) -> () {
         //     pt_ct = 0;
         // }
         
-        // if ct > 10000000 {
+        // if ct > 1000 {
         //     break
         // }
     }
 
-    //Once we have read all the record, repeat the process for the records corresponding to the very last read
-    let new_recs = do_analysis(&same_vec,
-        &keep_locations,temperature,keep_secondary,keep_sequence);
-    let separated_recs = split_directions(new_recs);
+    //Once we have read all the records, repeat the process for the records corresponding to the very last read
+    let separated_recs = split_directions(same_vec);
 
     for group in separated_recs {
-        write_records(&mut output,group);
+        //Analyse these records and filter them/update mapq scores etc.
+        let new_recs = do_analysis(&group,
+            &keep_locations,temperature,keep_sequence);
+        //Write the list of filtered records to our output file
+        write_records(&mut output,new_recs,keep_secondary);
     }
-
     let elapsed = start_time.elapsed();
     println!("Elapsed time: {:.2?}",elapsed);
 
