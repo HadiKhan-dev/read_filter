@@ -27,7 +27,7 @@ fn main() {
         //.value_parser(value_parser!(PathBuf)))
     .arg(
         arg!(
-            -o --output <FILE> "Path for the output file to write"
+            -o --output <FILE> "Path for the output file to write, REQUIRED"
         )
         .required(true))
         //.value_parser(value_parser!(PathBuf)))
@@ -36,7 +36,7 @@ fn main() {
             -t --temperature <VALUE> "Temperature for recalculating MAPQ score"
         )
         .value_parser(value_parser!(f64))
-        .default_value("1.0")
+        .default_value("0.125")
     )
     .arg(
         arg!(
@@ -51,7 +51,7 @@ fn main() {
         ))
     .arg(
         arg!(
-            --drop_sequence "Flag to drop any sequence data present in the original BAM file into the new one"
+            --drop_sequence "Flag to drop any sequence data present in the original BAM file"
         ))
     .get_matches();
 
