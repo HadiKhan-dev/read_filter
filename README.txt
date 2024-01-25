@@ -1,4 +1,6 @@
 This is a simple program developed to filter reads from a .bam file which lie in specific regions of interest on a contig of interest.
+The contigs/regions of interest are specified using a .bed file.
+The program also recomputes MAPQ scores taking into account only the filtered reads.
 It is written using Rust. 
 
 To build the program read_filter:
