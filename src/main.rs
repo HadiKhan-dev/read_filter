@@ -40,7 +40,7 @@ fn main() {
     )
     .arg(
         arg!(
-            -h --htslib_threads <VALUE> "Number of threads to use for the htslib based reader/writer"
+            --htslib_threads <VALUE> "Number of threads to use for the htslib based reader/writer"
         )
         .value_parser(value_parser!(u32))
         .default_value("1")
