@@ -36,7 +36,8 @@ fn main() {
             -t --temperature <VALUE> "Temperature for recalculating MAPQ score"
         )
         .value_parser(value_parser!(f64))
-        .default_value("0.125")
+        .default_value("10")
+        
     )
     .arg(
         arg!(

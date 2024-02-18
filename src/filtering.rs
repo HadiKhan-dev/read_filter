@@ -11,7 +11,7 @@ use rust_htslib::tpool::ThreadPool as HtslibThreadPool;
 use rust_htslib::{bam, bam::Read,bam::Record};
 use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::bam::Writer;
-use rust_htslib::bam::record::{Aux, Seq};
+use rust_htslib::bam::record::{Aux, Cigar, CigarString, Seq};
 use rust_htslib::bam::header::HeaderRecord;
 
 pub fn check_keep(record_ref: &Record,
@@ -26,16 +26,9 @@ pub fn check_keep(record_ref: &Record,
        return false;
    }
 
-//    if !keep_secondary {
-//        if record_ref.is_secondary() {
-//            return false;
-//        }
-//    }
-
-
-
    let record_id = record_ref.tid();
    let record_start = record_ref.reference_start() as i32;
+   let record_end = record_ref.reference_end() as i32;
 
    let regions_of_interest = keep_locs.get(&record_id);
 
@@ -43,7 +36,8 @@ pub fn check_keep(record_ref: &Record,
        Some(reg_int) => {
 
            for block in reg_int {
-               if (block[0] <= record_start) && (record_start <= block[1]) {
+               if (block[0] <= record_start) && (record_start <= block[1]) && 
+               (block[0] <= record_end) && (record_end <= block[1]) {
                    return true;
                }
            }
@@ -54,24 +48,31 @@ pub fn check_keep(record_ref: &Record,
 
 }
 
-pub fn get_new_mapq(alignment_scores: &Vec<i64>,temp: f64,max_score: i64) -> Vec<u8> {
+pub fn get_new_mapq(alignment_scores: &Vec<i64>,temp: f64) -> Vec<u8> {
 
     let num_matches = alignment_scores.len();
 
     let mut new_qs: Vec<i64> = vec![-1;num_matches];
-    let mut expd: Vec<f64> = vec![-1.0;num_matches];
+    let mut betas: Vec<f64> = vec![-1.0;num_matches];
     let mut probs: Vec<f64> = Vec::new();
     let mut prob_wrong: Vec<f64> = Vec::new();
     let mut phred_scaled: Vec<f64> = Vec::new();
     let mut scores: Vec<u8> = Vec::new();
-    let mut full_sum: f64 = 0.0;
+    let mut log_full_sum: f64 = 0.0;
+
 
     for i in 0..num_matches {
         if alignment_scores[i] == -1 {
             continue;
         }
-        expd[i] = ((alignment_scores[i] as f64)/(temp*(max_score as f64))).exp();
-        full_sum += expd[i];
+        betas[i] = (alignment_scores[i] as f64)/temp;
+
+        //Update our running total of the log of the sum of e^(AS_i/T) so far
+        if betas[i]-log_full_sum <= 20.0 {
+            log_full_sum += (betas[i]-log_full_sum).exp().ln_1p();
+        } else {
+            log_full_sum = betas[i]+(log_full_sum-betas[i]).exp().ln_1p();
+        }
     }
 
     for i in 0..num_matches {
@@ -82,11 +83,12 @@ pub fn get_new_mapq(alignment_scores: &Vec<i64>,temp: f64,max_score: i64) -> Vec
             scores.push(255);
             continue;
         }
-        probs.push(expd[i]/full_sum);
-        prob_wrong.push(1.0-expd[i]/full_sum);
-        phred_scaled.push(-10.0*((1.0-expd[i]/full_sum).log10()));
+        //Calculate probability of read actually coming from alignment location, probability of it not coming from there and the PHRED scaled score
+        probs.push((betas[i]-log_full_sum).exp());
+        prob_wrong.push(1.0-(betas[i]-log_full_sum).exp());
+        phred_scaled.push(-10.0*((1.0-(betas[i]-log_full_sum).exp()).log10()));
 
-        let mut scaled_score = 1.0*(-10.0*((1.0-expd[i]/full_sum).log10()));
+        let mut scaled_score = 1.0*(-10.0*((1.0-(betas[i]-log_full_sum).exp()).log10()));
 
         if scaled_score > 60.0 {
             scaled_score = 60.0;
@@ -130,6 +132,7 @@ pub fn do_analysis(same_records: &Vec<Record>,
     let mut keep_flags: Vec<u8> = vec![0;same_records.len()];
     let mut alignment_score: Vec<i64> = vec![0;same_records.len()];
 
+    //Flag up those records that we wish to keep
     for i in 0..same_records.len() {
         let rec = &same_records[i];
         if check_keep(rec,keep_locs) {
@@ -137,7 +140,7 @@ pub fn do_analysis(same_records: &Vec<Record>,
         }
     }
 
-
+    //Get the alignment scores for all our records
     for i in 0..same_records.len() {
         if keep_flags[i] == 0 {
             alignment_score[i] = -1;
@@ -157,11 +160,12 @@ pub fn do_analysis(same_records: &Vec<Record>,
     let read_length = same_records[0].seq_len_from_cigar(true) as i64;
 
     let new_qualities: Vec<u8> = get_new_mapq(&alignment_score,
-        temperature,read_length);
+        temperature);
     
     let mut best_match_index = -1;
     let mut best_match_score = -1;
 
+    //Find the new best march
     for i in 0..new_qualities.len() {
         if ((new_qualities[i] as isize) > best_match_score) & (new_qualities[i] != 255){
             best_match_index = i as isize;
@@ -173,14 +177,14 @@ pub fn do_analysis(same_records: &Vec<Record>,
     let mut found_seq_string = String::new();
     let mut found_sequence = "";
 
+    //Find the sequence data for the read by reading the primary alignment
     for i in 0..same_records.len() {
-        if same_records[i].seq().len() > found_sequence.len() {
+
+        if same_records[i].seq().len() > found_seq_string.len() {
             found_seq_string = String::from_utf8(same_records[i].seq().as_bytes()).expect("");
             found_sequence = found_seq_string.as_str();
         }
     }
-
-    //println!("{:?} {} {}",found_sequence,found_sequence.len(),best_match_index);
 
     for i in 0..same_records.len() {
         if keep_flags[i] == 1{
@@ -188,7 +192,7 @@ pub fn do_analysis(same_records: &Vec<Record>,
             let record_name = same_records[i].qname().clone();
 
             let cig_string = cloned_record.cigar().clone().take();
-            let cigar_seq = Some(&cig_string);
+            let mut cigar_seq = Some(&cig_string);
 
             //Remove sequence data
             cloned_record.set(record_name,cigar_seq,&[],&[]);
@@ -198,11 +202,41 @@ pub fn do_analysis(same_records: &Vec<Record>,
             if (i as isize) != best_match_index {
                 cloned_record.set_secondary();
             } else {
+
+                //Keep track of whether the new record we are going to set as the primary was previously non-primary
+                let mut changed_primary = false;
+
+                if cloned_record.is_secondary() {
+                    changed_primary = true;
+                }
+
                 cloned_record.unset_secondary();
                 if keep_sequence {
-                    //cloned_record.set(record_name,cigar_seq,
-                    //    found_sequence.as_bytes(),
-                    //    &vec![ 255 as u8; found_sequence.len()]);
+
+                    let mut new_cigar_vec : Vec<Cigar> = Vec::new();
+
+
+                    for item in cigar_seq.unwrap() {
+                        let mut to_add: Cigar;
+                        match item {
+                            Cigar::HardClip(y) => {
+                                to_add = Cigar::SoftClip(*y);
+                            }
+                            _ => {
+                                to_add = item.clone();
+                            }
+                        }
+                        new_cigar_vec.push(to_add);
+                    }
+
+                    //Create a reference to create the new Cigar String object
+                    let new_cigar_vec_ref = &CigarString(new_cigar_vec);
+                    let new_cigar_seq = Some(new_cigar_vec_ref);
+
+
+                    cloned_record.set(record_name,new_cigar_seq,
+                        found_sequence.as_bytes(),
+                        &vec![ 255 as u8; found_sequence.len()]);
                 }
             }
             new_records.push(cloned_record);
@@ -213,22 +247,19 @@ pub fn do_analysis(same_records: &Vec<Record>,
 }
 
 pub fn split_directions(records: Vec<Record>) -> Vec<Vec<Record>> {
-
+    /*
+    Split the records for the forward read from the records for the reverse read
+     */
     let mut forward_records = vec![];
     let mut backward_records = vec![];
 
     for record in records {
+
         if record.is_first_in_template() {
-            //println!("{:?}",record.flags());
-            //println!("FIRST");
             forward_records.push(record);
         } else if record.is_last_in_template() {
-            //println!("{:?}",record.flags());
-            //println!("SECOND");
             backward_records.push(record);
-        } else {
-            //println!("WEIRD");
-        }
+        } 
     }
     return vec![forward_records,backward_records];
 }
@@ -395,9 +426,9 @@ full_command: &str) -> () {
         //     pt_ct = 0;
         // }
         
-        // if ct > 1000 {
-        //     break
-        // }
+        if ct > 10000000 {
+            break
+        }
     }
 
     //Once we have read all the records, repeat the process for the records corresponding to the very last read
