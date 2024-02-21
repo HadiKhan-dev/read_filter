@@ -1,11 +1,12 @@
 #![allow(warnings)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap,VecDeque};
 use std::time::Instant;
 use std::fs::File;
 use std::path::PathBuf;
 use std::io::{BufReader,BufRead};
 use std::str;
+use std::sync::{Arc,Mutex};
 use threadpool::ThreadPool;
 use rust_htslib::tpool::ThreadPool as HtslibThreadPool;
 use rust_htslib::{bam, bam::Read,bam::Record};
@@ -13,6 +14,12 @@ use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::bam::Writer;
 use rust_htslib::bam::record::{Aux, Cigar, CigarString, Seq};
 use rust_htslib::bam::header::HeaderRecord;
+
+//Struct which keeps track of a read by its name as well as whether it is the first in its pair or not
+pub struct ReadNameOrient {
+    readName: String,
+    is_first: bool,
+}
 
 pub fn check_keep(record_ref: &Record,
     keep_locs: &HashMap<i32,Vec<[i32;2]>>,
@@ -374,6 +381,23 @@ full_command: &str) -> () {
 
 
     //The main logic of the function:
+
+    //Thread sharable queue which will contain the batched records ready for processing
+    let mut record_processing_queue: Arc<Mutex<VecDeque<Vec<Record>>>> = 
+    Arc::new(Mutex::new(VecDeque::<Vec<Record>>::new()));
+
+    //Thread shareable HashMap which will contain as keys the (i64) numerical order the reads
+    // are in in the input bam file and as value for key i the name of the i^th read as well as 
+    // whether it was first or second in pair. This is used for the later writing of the bam file
+    // to ensure the output is sorted in the same order as the input.
+    let mut record_name_indexing_hashmap: Arc<Mutex<HashMap<i64, ReadNameOrient>>> =
+     Arc::new(Mutex::new(HashMap::<i64,ReadNameOrient>::new()));
+
+    //Thread shareable HashMap which will contain as keys the ReadNameOrient for each read
+    // and as value the processed data for that read. This will be used for writing the output file 
+    let mut processed_data_hashmap: Arc<Mutex<HashMap<ReadNameOrient, Vec<Record>>>> =
+     Arc::new(Mutex::new(HashMap::<ReadNameOrient,Vec<Record>>::new()));
+
     let mut last_record = Record::new();
     let mut cur_record = Record::new();
     let mut ct = 0;
@@ -383,7 +407,7 @@ full_command: &str) -> () {
     //Iterate over our records
     while let Some(r) = bam_reader.read(&mut cur_record) {
         
-        //If we are at the first record then start populating our vecotr of records with the same name (i.e. for the same read)
+        //If we are at the first record then start populating our vector of records with the same name (i.e. for the same read)
         if ct == 0 {
             same_vec.push(cur_record.clone());
             last_record = cur_record.clone();
@@ -405,11 +429,14 @@ full_command: &str) -> () {
             let separated_recs = split_directions(same_vec);
 
             for group in separated_recs {
-                //Analyse these records and filter them/update mapq scores etc.
-                let new_recs = do_analysis(&group,
-                    &keep_locations,temperature,keep_sequence);
-                //Write the list of filtered records to our output file
-                write_records(&mut output,new_recs,keep_secondary);
+
+
+
+                // //Analyse these records and filter them/update mapq scores etc.
+                // let new_recs = do_analysis(&group,
+                //     &keep_locations,temperature,keep_sequence);
+                // //Write the list of filtered records to our output file
+                // write_records(&mut output,new_recs,keep_secondary);
             }
             
             //start a new list of records for the current read
