@@ -39,9 +39,23 @@ fn main() {
         .default_value("10")
         
     )
+    // .arg(
+    //     arg!(
+    //         -q --queue_limit <VALUE> "Maximum size of queue of batched reads waiting to be processed"
+    //     )
+    //     .value_parser(value_parser!(u32))
+    //     .default_value("1000000")
+    // )
     .arg(
         arg!(
             --htslib_threads <VALUE> "Number of threads to use for the htslib based reader/writer"
+        )
+        .value_parser(value_parser!(u32))
+        .default_value("1")
+    )
+    .arg(
+        arg!(
+            --processing_threads <VALUE> "Number of threads to use for processing name batched reads"
         )
         .value_parser(value_parser!(u32))
         .default_value("1")
@@ -83,8 +97,12 @@ fn main() {
 
     let htslib_threads = *matches.get_one::<u32>("htslib_threads").unwrap();
 
+    let processing_threads = *matches.get_one::<u32>("processing_threads").unwrap();
+
+    //let queue_limit = *matches.get_one::<u32>("queue_limit").unwrap();
+
     filtering::filter_records(bam_file,bed_file,
-        output_file,1,htslib_threads,
+        output_file,processing_threads,htslib_threads,
         temperature,keep_secondary,keep_sequence,full_command);
 
 }

@@ -120,16 +120,33 @@ pub fn write_records(bam_writer: &mut Writer, records: Vec<Record>, keep_seconda
         }
         bam_writer.write(&rec);
     }
-    //bam_writer.;
 
 }
 
-pub fn do_analysis(same_records: &Vec<Record>,
+pub fn split_directions(records: Vec<Record>) -> Vec<Vec<Record>> {
+    /*
+    Split the records for the forward read from the records for the reverse read
+     */
+    let mut forward_records = vec![];
+    let mut backward_records = vec![];
+
+    for record in records {
+
+        if record.is_first_in_template() {
+            forward_records.push(record);
+        } else if record.is_last_in_template() {
+            backward_records.push(record);
+        } 
+    }
+    return vec![forward_records,backward_records];
+}
+
+pub fn do_analysis(same_records: Vec<Record>,
     keep_locs: &HashMap<i32,Vec<[i32;2]>>, temperature: f64,
     keep_sequence: bool, 
     ) -> Vec<Record> {
 
-    //If we are passed in an empty set of records to analyse, jusr return an empty vector
+    //If we are passed in an empty set of records to analyse, just return an empty vector
     if same_records.len() == 0 {
         return vec![];
     }
@@ -245,6 +262,11 @@ pub fn do_analysis(same_records: &Vec<Record>,
                         found_sequence.as_bytes(),
                         &vec![ 255 as u8; found_sequence.len()]);
                 }
+
+                if changed_primary {
+                    let changed_warning = Aux::String("Not original primary alignment");
+                    cloned_record.push_aux(b"WA",changed_warning);
+                }
             }
             new_records.push(cloned_record);
         }
@@ -253,23 +275,20 @@ pub fn do_analysis(same_records: &Vec<Record>,
     return new_records;
 }
 
-pub fn split_directions(records: Vec<Record>) -> Vec<Vec<Record>> {
-    /*
-    Split the records for the forward read from the records for the reverse read
-     */
-    let mut forward_records = vec![];
-    let mut backward_records = vec![];
+pub fn split_and_analyse(mixed_records: Vec<Record>,
+    keep_locs: &HashMap<i32,Vec<[i32;2]>>, temperature: f64,
+    keep_sequence: bool, 
+    ) -> Vec<Record> {
+        let split_recs = split_directions(mixed_records);
 
-    for record in records {
+        let mut combined_records: Vec<Record> = vec![];
 
-        if record.is_first_in_template() {
-            forward_records.push(record);
-        } else if record.is_last_in_template() {
-            backward_records.push(record);
-        } 
+        for group in split_recs {
+            combined_records.extend(do_analysis(group,keep_locs,temperature,keep_sequence));
+        }
+        return combined_records;
     }
-    return vec![forward_records,backward_records];
-}
+
 
 pub fn filter_records(bam_filename: &str, bed_filename: &str, output_filename: &str,
     num_filtering_threads: u32,num_bam_threads: u32, temperature: f64,
@@ -283,15 +302,10 @@ full_command: &str) -> () {
     //Set up the threadpool for multiprocessing
     let htslib_pool = HtslibThreadPool::new(num_bam_threads).unwrap();
 
-    //let filtering_pool: ThreadPool = ThreadPool::new(num_filtering_threads as usize);
-
-
-    //Set up the sender and receiver channels
-    //let (tx, rx) = channel();
 
     let start_time = Instant::now();
     
-    //Read the files from disc
+    //Read the files from disk
     let mut bed_file = File::open(bed_filename).unwrap();
     let bed_reader = BufReader::new(bed_file);
 
@@ -425,19 +439,11 @@ full_command: &str) -> () {
             ct += 1;
         } else { //Otherwise we have all records for the last read
 
-            //Break up the records by whether they are for the foward read in the pair or the reverse read
-            let separated_recs = split_directions(same_vec);
-
-            for group in separated_recs {
-
-
-
-                // //Analyse these records and filter them/update mapq scores etc.
-                // let new_recs = do_analysis(&group,
-                //     &keep_locations,temperature,keep_sequence);
-                // //Write the list of filtered records to our output file
-                // write_records(&mut output,new_recs,keep_secondary);
-            }
+            //Analyse these records and filter them/update mapq scores etc.
+            let new_recs = split_and_analyse(same_vec,
+                &keep_locations,temperature,keep_sequence);
+            //Write the list of filtered records to our output file
+            write_records(&mut output,new_recs,keep_secondary);
             
             //start a new list of records for the current read
             same_vec = vec![cur_record.clone()];
@@ -453,21 +459,17 @@ full_command: &str) -> () {
         //     pt_ct = 0;
         // }
         
-        if ct > 10000000 {
+        if ct > 10_000_000 {
             break
         }
     }
 
     //Once we have read all the records, repeat the process for the records corresponding to the very last read
-    let separated_recs = split_directions(same_vec);
+    let new_recs = split_and_analyse(same_vec,
+        &keep_locations,temperature,keep_sequence);
+    write_records(&mut output,new_recs,keep_secondary);
 
-    for group in separated_recs {
-        //Analyse these records and filter them/update mapq scores etc.
-        let new_recs = do_analysis(&group,
-            &keep_locations,temperature,keep_sequence);
-        //Write the list of filtered records to our output file
-        write_records(&mut output,new_recs,keep_secondary);
-    }
+
     let elapsed = start_time.elapsed();
     println!("Elapsed time: {:.2?}",elapsed);
 
