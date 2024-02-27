@@ -1,12 +1,14 @@
 #![allow(warnings)]
 
+use rand::{thread_rng, Rng};
 use std::collections::{HashMap,VecDeque};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::fs::File;
 use std::path::PathBuf;
 use std::io::{BufReader,BufRead};
-use std::str;
+use std::{str, thread};
 use std::sync::{Arc,Mutex};
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use threadpool::ThreadPool;
 use rust_htslib::tpool::ThreadPool as HtslibThreadPool;
 use rust_htslib::{bam, bam::Read,bam::Record};
@@ -14,11 +16,18 @@ use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::bam::Writer;
 use rust_htslib::bam::record::{Aux, Cigar, CigarString, Seq};
 use rust_htslib::bam::header::HeaderRecord;
+use rayon;
 
-//Struct which keeps track of a read by its name as well as whether it is the first in its pair or not
-pub struct ReadNameOrient {
-    readName: String,
-    is_first: bool,
+fn is_prime(n: u64) -> bool {
+    if n <= 1 {
+        return false;
+    }
+    for a in 2..n {
+        if n % a == 0 {
+            return false; // if it is not the last statement you need to use `return`
+        }
+    }
+    true // last value to return
 }
 
 pub fn check_keep(record_ref: &Record,
@@ -298,6 +307,7 @@ full_command: &str) -> () {
     //Set up basic parameters like name of the program etc.
     let PROGRAM_NAME = "read_filter";
     let PROGRAM_NAME_LENGTH = PROGRAM_NAME.len();
+    let BUFFER_SIZE = 200000;
 
     //Set up the threadpool for multiprocessing
     let htslib_pool = HtslibThreadPool::new(num_bam_threads).unwrap();
@@ -396,21 +406,7 @@ full_command: &str) -> () {
 
     //The main logic of the function:
 
-    //Thread sharable queue which will contain the batched records ready for processing
-    let mut record_processing_queue: Arc<Mutex<VecDeque<Vec<Record>>>> = 
-    Arc::new(Mutex::new(VecDeque::<Vec<Record>>::new()));
-
-    //Thread shareable HashMap which will contain as keys the (i64) numerical order the reads
-    // are in in the input bam file and as value for key i the name of the i^th read as well as 
-    // whether it was first or second in pair. This is used for the later writing of the bam file
-    // to ensure the output is sorted in the same order as the input.
-    let mut record_name_indexing_hashmap: Arc<Mutex<HashMap<i64, ReadNameOrient>>> =
-     Arc::new(Mutex::new(HashMap::<i64,ReadNameOrient>::new()));
-
-    //Thread shareable HashMap which will contain as keys the ReadNameOrient for each read
-    // and as value the processed data for that read. This will be used for writing the output file 
-    let mut processed_data_hashmap: Arc<Mutex<HashMap<ReadNameOrient, Vec<Record>>>> =
-     Arc::new(Mutex::new(HashMap::<ReadNameOrient,Vec<Record>>::new()));
+    // let mut read_buffer : Vec<Vec<Record>> = Vec::with_capacity(2*BUFFER_SIZE);
 
     let mut last_record = Record::new();
     let mut cur_record = Record::new();
@@ -451,6 +447,33 @@ full_command: &str) -> () {
             //update the last record before looping over to the next record
             last_record = cur_record.clone();
             ct += 1;
+
+            // read_buffer.push(same_vec);
+
+            // if read_buffer.len() > BUFFER_SIZE {
+
+            //     let processed: Vec<Vec<Record>> =
+            //     read_buffer.into_iter().map(|single_read_recs| {
+
+            //         //thread::sleep(Duration::from_nanos(1000000));
+
+            //         let split = split_and_analyse(single_read_recs,
+            //             &keep_locations,temperature,keep_sequence);
+
+
+            //         return split;
+            //     }).collect();
+
+            //     //let processed = read_buffer;
+
+            //     for thing in processed {
+            //         write_records(&mut output,thing,keep_secondary); 
+            //     }
+
+            //     read_buffer = vec![];
+
+
+            // }
         }
 
         // pt_ct += 1;
@@ -459,15 +482,31 @@ full_command: &str) -> () {
         //     pt_ct = 0;
         // }
         
-        if ct > 10_000_000 {
-            break
-        }
+        // if ct > 100_000_000 {
+        //     break
+        // }
     }
 
     //Once we have read all the records, repeat the process for the records corresponding to the very last read
     let new_recs = split_and_analyse(same_vec,
         &keep_locations,temperature,keep_sequence);
     write_records(&mut output,new_recs,keep_secondary);
+
+    //Buffered writing method, is slower due to RAM access
+    // read_buffer.push(same_vec);
+
+    // let processed: Vec<Vec<Record>> =
+    //     read_buffer.into_par_iter().map(|single_read_recs| {
+
+    //         let split = split_and_analyse(single_read_recs,
+    //             &keep_locations,temperature,keep_sequence);
+
+    //         return split;
+    //     }).collect();
+    
+    // for thing in processed {
+    //     write_records(&mut output,thing,keep_secondary); 
+    // }
 
 
     let elapsed = start_time.elapsed();

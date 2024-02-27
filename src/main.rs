@@ -10,7 +10,7 @@ use clap::{arg, command, value_parser, ArgAction, Command};
 fn main() {
 
     let matches = command!()
-    .version("1.0.0")
+    .version("1.0.1")
     .author("Hadi Khan")
     .about("A simple program to filter reads in a BAM file and update the MAPQ score")
     .arg(
@@ -48,25 +48,25 @@ fn main() {
     // )
     .arg(
         arg!(
-            --htslib_threads <VALUE> "Number of threads to use for the htslib based reader/writer"
+            -H --htslib_threads <VALUE> "Number of threads to use for the htslib based reader/writer"
         )
         .value_parser(value_parser!(u32))
         .default_value("1")
     )
+    // .arg(
+    //     arg!(
+    //         --processing_threads <VALUE> "Number of threads to use for processing name batched reads"
+    //     )
+    //     .value_parser(value_parser!(u32))
+    //     .default_value("1")
+    // )
     .arg(
         arg!(
-            --processing_threads <VALUE> "Number of threads to use for processing name batched reads"
-        )
-        .value_parser(value_parser!(u32))
-        .default_value("1")
-    )
-    .arg(
-        arg!(
-            --drop_secondary "Flag to drop the secondary reads in the BAM file produced by the program"
+            -D --drop_secondary "Flag to drop the secondary reads in the BAM file produced by the program"
         ))
     .arg(
         arg!(
-            --drop_sequence "Flag to drop any sequence data present in the original BAM file"
+            -d --drop_sequence "Flag to drop any sequence data present in the original BAM file"
         ))
     .get_matches();
 
@@ -97,8 +97,9 @@ fn main() {
 
     let htslib_threads = *matches.get_one::<u32>("htslib_threads").unwrap();
 
-    let processing_threads = *matches.get_one::<u32>("processing_threads").unwrap();
+    //let processing_threads = *matches.get_one::<u32>("processing_threads").unwrap();
 
+    let processing_threads = 1;
     //let queue_limit = *matches.get_one::<u32>("queue_limit").unwrap();
 
     filtering::filter_records(bam_file,bed_file,
